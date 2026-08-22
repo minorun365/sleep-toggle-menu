@@ -1,0 +1,1 @@
+%admin ALL=(root) NOPASSWD: /usr/local/libexec/sleep-toggle-helper 0, /usr/local/libexec/sleep-toggle-helper 1
