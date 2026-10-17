@@ -53,8 +53,57 @@ for testCase in testCases {
     }
 }
 
+func check<T: Equatable>(_ name: String, _ actual: T, _ expected: T) {
+    if actual == expected {
+        print("PASS: \(name)")
+    } else {
+        failures += 1
+        print("FAIL: \(name) expected=\(expected) actual=\(actual)")
+    }
+}
+
+let now = Date(timeIntervalSince1970: 1_800_000_000)
+let hour: TimeInterval = 60 * 60
+
+check(
+    "期限前の起動維持はそのまま",
+    AutoRevertPolicy.action(permission: .prohibited, deadline: now.addingTimeInterval(1), now: now),
+    .none
+)
+check(
+    "期限ちょうどで戻す",
+    AutoRevertPolicy.action(permission: .prohibited, deadline: now, now: now),
+    .revert
+)
+check(
+    "スリープ中に期限を過ぎていても戻す",
+    AutoRevertPolicy.action(permission: .prohibited, deadline: now.addingTimeInterval(-3 * hour), now: now),
+    .revert
+)
+check(
+    "期限の無い起動維持には既定の1時間を付ける",
+    AutoRevertPolicy.action(permission: .prohibited, deadline: nil, now: now),
+    .assignDeadline(now.addingTimeInterval(hour))
+)
+check(
+    "スリープ可能に戻っていたら期限を捨てる",
+    AutoRevertPolicy.action(permission: .allowed, deadline: now.addingTimeInterval(hour), now: now),
+    .clearDeadline
+)
+check(
+    "状態不明のときは何もしない",
+    AutoRevertPolicy.action(permission: .unknown, deadline: now.addingTimeInterval(-hour), now: now),
+    .none
+)
+check("残り59分30秒は0:60でなく1:00", RemainingTimeFormatter.short(59 * 60 + 30), "1:00")
+check("残り2時間", RemainingTimeFormatter.short(2 * hour), "2:00")
+check("残りがマイナスでも0:00", RemainingTimeFormatter.short(-10), "0:00")
+check("1時間の表記", RemainingTimeFormatter.duration(hour), "1時間")
+check("90分の表記", RemainingTimeFormatter.duration(90 * 60), "1時間30分")
+check("30分の表記", RemainingTimeFormatter.duration(30 * 60), "30分")
+
 guard failures == 0 else {
     exit(1)
 }
 
-print("全\(testCases.count)件の自己診断に成功しました。")
+print("自己診断にすべて成功しました。")

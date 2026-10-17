@@ -4,10 +4,25 @@ import SleepToggleCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let deadlineKey = "keepAwakeDeadline"
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var refreshTimer: Timer?
     private var currentPermission: SleepPermission = .unknown
     private var isChanging = false
+    private var autoRevertErrorShown = false
+
+    /// 自動で戻す時刻。アプリやMacを再起動しても引き継ぐため UserDefaults に置く。
+    private var deadline: Date? {
+        get { UserDefaults.standard.object(forKey: Self.deadlineKey) as? Date }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: Self.deadlineKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.deadlineKey)
+            }
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -33,6 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+
+        // 期限を見張る者がいなくなるので、起動維持のまま終わらせない。
+        if PowerManagement.currentPermission() == .prohibited {
+            try? PowerManagement.setSleepProhibited(false)
+        }
+        if PowerManagement.currentPermission() == .allowed {
+            deadline = nil
+        }
     }
 
     private func configureStatusItem() {
@@ -41,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.target = self
         button.action = #selector(statusItemClicked)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        button.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        button.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
     }
 
     @objc private func statusItemClicked() {
@@ -58,27 +81,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
 
         let menu = NSMenu()
-        let status = NSMenuItem(
-            title: statusDescription,
-            action: nil,
-            keyEquivalent: ""
-        )
-        status.isEnabled = false
-        menu.addItem(status)
+        for line in statusLines {
+            let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
 
-        let toggle = NSMenuItem(
-            title: toggleActionTitle,
-            action: #selector(toggleFromMenu),
-            keyEquivalent: ""
-        )
-        toggle.target = self
-        toggle.isEnabled = !isChanging && currentPermission != .unknown
-        menu.addItem(toggle)
+        let canChange = !isChanging && currentPermission != .unknown
+
+        if currentPermission == .prohibited {
+            let revert = NSMenuItem(
+                title: "通常へ戻す",
+                action: #selector(revertFromMenu),
+                keyEquivalent: ""
+            )
+            revert.target = self
+            revert.isEnabled = canChange
+            menu.addItem(revert)
+        }
+
+        for duration in KeepAwakeDuration.choices {
+            let label = RemainingTimeFormatter.duration(duration)
+            let title = currentPermission == .prohibited
+                ? "いまから\(label)に延長"
+                : "\(label)だけ起動維持にする"
+            let item = NSMenuItem(
+                title: title,
+                action: #selector(keepAwakeFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = duration
+            item.isEnabled = canChange
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
 
         let quit = NSMenuItem(
-            title: "終了",
+            title: "終了（スリープ可能に戻します）",
             action: #selector(quitApplication),
             keyEquivalent: "q"
         )
@@ -88,8 +129,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSMenu.popUpContextMenu(menu, with: event, for: button)
     }
 
-    @objc private func toggleFromMenu() {
-        toggleSleepPermission()
+    @objc private func revertFromMenu() {
+        changeSleepPermission(prohibit: false, deadline: nil)
+    }
+
+    @objc private func keepAwakeFromMenu(_ sender: NSMenuItem) {
+        guard let duration = sender.representedObject as? TimeInterval else { return }
+        keepAwake(for: duration)
     }
 
     @objc private func quitApplication() {
@@ -97,18 +143,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func toggleSleepPermission() {
-        guard !isChanging else { return }
-
-        let shouldProhibit: Bool
         switch currentPermission {
         case .prohibited:
-            shouldProhibit = false
+            changeSleepPermission(prohibit: false, deadline: nil)
         case .allowed:
-            shouldProhibit = true
+            keepAwake(for: KeepAwakeDuration.defaultDuration)
         case .unknown:
             showError("現在のスリープ設定を取得できません。")
+        }
+    }
+
+    private func keepAwake(for duration: TimeInterval) {
+        let newDeadline = Date().addingTimeInterval(duration)
+
+        // すでに起動維持中なら、期限を付け替えるだけでよい。
+        if currentPermission == .prohibited {
+            deadline = newDeadline
+            updateAppearance()
             return
         }
+
+        changeSleepPermission(prohibit: true, deadline: newDeadline)
+    }
+
+    private func changeSleepPermission(
+        prohibit: Bool,
+        deadline newDeadline: Date?,
+        showsError: Bool = true
+    ) {
+        guard !isChanging else { return }
 
         isChanging = true
         updateAppearance()
@@ -116,7 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result: Result<Void, Error>
             do {
-                try PowerManagement.setSleepProhibited(shouldProhibit)
+                try PowerManagement.setSleepProhibited(prohibit)
                 result = .success(())
             } catch {
                 result = .failure(error)
@@ -125,11 +188,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isChanging = false
-                self.refreshState()
 
-                if case let .failure(error) = result {
-                    self.showError(error.localizedDescription)
+                switch result {
+                case .success:
+                    self.deadline = newDeadline
+                    self.autoRevertErrorShown = false
+                case let .failure(error):
+                    if showsError {
+                        self.showError(error.localizedDescription)
+                    }
                 }
+                self.refreshState()
             }
         }
     }
@@ -137,7 +206,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func refreshState() {
         guard !isChanging else { return }
         currentPermission = PowerManagement.currentPermission()
+
+        switch AutoRevertPolicy.action(
+            permission: currentPermission,
+            deadline: deadline,
+            now: Date()
+        ) {
+        case .none:
+            break
+        case let .assignDeadline(newDeadline):
+            deadline = newDeadline
+        case .clearDeadline:
+            deadline = nil
+        case .revert:
+            // 失敗しても3秒ごとに再試行する。警告は1回だけ出し、毎回は出さない。
+            let showsError = !autoRevertErrorShown
+            autoRevertErrorShown = true
+            changeSleepPermission(prohibit: false, deadline: nil, showsError: showsError)
+            return
+        }
+
         updateAppearance()
+    }
+
+    private var remaining: TimeInterval? {
+        deadline.map { $0.timeIntervalSinceNow }
     }
 
     private func updateAppearance() {
@@ -148,9 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch currentPermission {
         case .prohibited:
-            showText("🔥", tooltip: "スリープ禁止中。左クリックで通常へ戻します")
+            let countdown = remaining.map { " " + RemainingTimeFormatter.short($0) } ?? ""
+            showText("🔥" + countdown, tooltip: "スリープ禁止中。時間が来ると自動で通常へ戻ります。左クリックですぐ戻します")
         case .allowed:
-            showSymbol("flame.fill", fallback: "○", tooltip: "スリープ可能。左クリックで起動維持へ切り替えます")
+            showSymbol("flame.fill", fallback: "○", tooltip: "スリープ可能。左クリックで1時間だけ起動維持にします")
         case .unknown:
             showText("? スリープ", tooltip: "スリープ設定を取得できません")
         }
@@ -180,25 +274,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.toolTip = tooltip
     }
 
-    private var statusDescription: String {
+    private var statusLines: [String] {
         switch currentPermission {
         case .prohibited:
-            return "現在：スリープ禁止"
+            guard let deadline else { return ["現在：スリープ禁止"] }
+            let time = deadline.formatted(date: .omitted, time: .shortened)
+            let left = RemainingTimeFormatter.duration(max(0, deadline.timeIntervalSinceNow))
+            return ["現在：スリープ禁止", "\(time)に自動で戻します（あと\(left)）"]
         case .allowed:
-            return "現在：スリープ可能"
+            return ["現在：スリープ可能"]
         case .unknown:
-            return "現在：状態を取得できません"
-        }
-    }
-
-    private var toggleActionTitle: String {
-        switch currentPermission {
-        case .prohibited:
-            return "通常へ戻す"
-        case .allowed:
-            return "起動維持にする"
-        case .unknown:
-            return "切り替え不可"
+            return ["現在：状態を取得できません"]
         }
     }
 
