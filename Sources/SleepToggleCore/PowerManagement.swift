@@ -10,17 +10,20 @@ public enum PMSetOutputParser {
     public static func sleepPermission(from output: String) -> SleepPermission {
         let pattern = #"(?m)^\s*SleepDisabled\s+([01])\s*$"#
 
-        guard let expression = try? NSRegularExpression(pattern: pattern),
-              let match = expression.firstMatch(
-                  in: output,
-                  range: NSRange(output.startIndex..., in: output)
-              ),
-              let valueRange = Range(match.range(at: 1), in: output)
-        else {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
             return .unknown
         }
 
-        return output[valueRange] == "1" ? .prohibited : .allowed
+        if let match = expression.firstMatch(
+            in: output,
+            range: NSRange(output.startIndex..., in: output)
+        ), let valueRange = Range(match.range(at: 1), in: output) {
+            return output[valueRange] == "1" ? .prohibited : .allowed
+        }
+
+        // 一度も disablesleep を設定していないMacでは SleepDisabled の行が出ない。
+        // pmset が設定一覧を返せているなら、既定値（スリープ可能）として扱う。
+        return output.contains("System-wide power settings") ? .allowed : .unknown
     }
 }
 

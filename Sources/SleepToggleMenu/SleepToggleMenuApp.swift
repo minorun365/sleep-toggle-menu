@@ -253,13 +253,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showText(_ text: String, tooltip: String) {
         guard let button = statusItem.button else { return }
 
-        button.image = nil
-        button.title = text
-        button.toolTip = tooltip
+        // 3秒ごとの再描画で同じ値を入れ直すと、ツールチップが出し直されてカーソルに付いて回る。
+        // 変わったときだけ書き換える。
+        if button.image != nil { button.image = nil }
+        shownSymbolName = nil
+        if button.title != text { button.title = text }
+        setToolTip(tooltip, on: button)
+    }
+
+    private func setToolTip(_ tooltip: String, on button: NSStatusBarButton) {
+        if button.toolTip != tooltip { button.toolTip = tooltip }
     }
 
     private func showSymbol(_ name: String, fallback: String, tooltip: String) {
         guard let button = statusItem.button else { return }
+        if shownSymbolName == name, button.image != nil {
+            setToolTip(tooltip, on: button)
+            return
+        }
 
         let configuration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
         guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
@@ -271,8 +282,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         image.isTemplate = true
         button.image = image
         button.title = ""
-        button.toolTip = tooltip
+        shownSymbolName = name
+        setToolTip(tooltip, on: button)
     }
+
+    private var shownSymbolName: String?
 
     private var statusLines: [String] {
         switch currentPermission {

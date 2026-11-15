@@ -40,6 +40,17 @@ let testCases = [
         """,
         expected: .unknown
     ),
+    TestCase(
+        name: "一度も設定していないMac（SleepDisabledの行が無い）はスリープ可能として判定",
+        output: """
+        System-wide power settings:
+        Currently in use:
+         standby              1
+         sleep                1 (sleep prevented by powerd)
+         displaysleep         5
+        """,
+        expected: .allowed
+    ),
 ]
 
 var failures = 0
