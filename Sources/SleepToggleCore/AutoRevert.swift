@@ -2,7 +2,7 @@ import Foundation
 
 /// 起動維持を何分で自動的に戻すか。メニューに並べる選択肢と、左クリック時の既定値。
 public enum KeepAwakeDuration {
-    public static let choices: [TimeInterval] = [60 * 60, 2 * 60 * 60]
+    public static let choices: [TimeInterval] = [60 * 60, 2 * 60 * 60, 6 * 60 * 60]
     public static let defaultDuration: TimeInterval = 60 * 60
 }
 

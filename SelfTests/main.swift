@@ -109,6 +109,8 @@ check(
 check("残り59分30秒は0:60でなく1:00", RemainingTimeFormatter.short(59 * 60 + 30), "1:00")
 check("残り2時間", RemainingTimeFormatter.short(2 * hour), "2:00")
 check("残りがマイナスでも0:00", RemainingTimeFormatter.short(-10), "0:00")
+check("残り6時間", RemainingTimeFormatter.short(6 * hour), "6:00")
+check("6時間の表記", RemainingTimeFormatter.duration(6 * hour), "6時間")
 check("1時間の表記", RemainingTimeFormatter.duration(hour), "1時間")
 check("90分の表記", RemainingTimeFormatter.duration(90 * 60), "1時間30分")
 check("30分の表記", RemainingTimeFormatter.duration(30 * 60), "30分")
